@@ -3854,36 +3854,33 @@
     }
 
     buildHeadphone(box) {
-      // 简约耳机：头梁 + 两个耳罩，跟随头部位置
+      // 简约耳机：头梁 + 两个耳罩，戴在耳朵位置
       const cfg = this.cfg;
-      const s = this.cfg.scale;
       const hpGroup = new THREE.Group();
       const bandMat = new THREE.MeshStandardMaterial({ color: 0x2a2a35, roughness: 0.6 });
       const cupMat = new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.5 });
-      // 头梁：半圆环
-      const headW = (cfg.earR[0] - cfg.earL[0]) * this.U.uBoxSize.value.x;
-      const band = new THREE.Mesh(
-        new THREE.TorusGeometry(headW * 0.62, headW * 0.09, 12, 24, Math.PI),
-        bandMat
-      );
-      // 耳罩：两个圆柱
-      const cupGeo = new THREE.CylinderGeometry(headW * 0.16, headW * 0.16, headW * 0.12, 20);
-      const cupL = new THREE.Mesh(cupGeo, cupMat);
-      const cupR = new THREE.Mesh(cupGeo, cupMat);
-      cupL.rotation.z = Math.PI / 2;
-      cupR.rotation.z = Math.PI / 2;
-      const cx = (cfg.earL[0] + cfg.earR[0]) / 2;
-      const cy = (cfg.earL[1] + cfg.earR[1]) / 2;
-      const cz = (cfg.earL[2] + cfg.earR[2]) / 2;
-      // 转换到本地坐标（未缩放）
       const bx = this.U.uBoxMin.value.x, by = this.U.uBoxMin.value.y, bz = this.U.uBoxMin.value.z;
       const bsx = this.U.uBoxSize.value.x, bsy = this.U.uBoxSize.value.y, bsz = this.U.uBoxSize.value.z;
-      const hx = bx + bsx * cx, hy = by + bsy * (cy + 0.06), hz = bz + bsz * cz;
-      band.position.set(hx, hy, hz);
-      const earY = by + bsy * cy;
-      cupL.position.set(bx + bsx * cfg.earL[0], earY, bz + bsz * cfg.earL[2]);
-      cupR.position.set(bx + bsx * cfg.earR[0], earY, bz + bsz * cfg.earR[2]);
-      hpGroup.add(band, cupL, cupR);
+      // 耳朵的本地坐标
+      const eLx = bx + bsx * cfg.earL[0], eLy = by + bsy * cfg.earL[1], eLz = bz + bsz * cfg.earL[2];
+      const eRx = bx + bsx * cfg.earR[0], eRy = by + bsy * cfg.earR[1], eRz = bz + bsz * cfg.earR[2];
+      const midX = (eLx + eRx) / 2, midY = (eLy + eRy) / 2, midZ = (eLz + eRz) / 2;
+      const earDist = Math.abs(eRx - eLx);
+      const R = earDist * 0.58;
+      // 头梁：半圆环，圆心在两耳连线中点，拱起
+      const band = new THREE.Mesh(
+        new THREE.TorusGeometry(R, earDist * 0.055, 10, 24, Math.PI),
+        bandMat
+      );
+      band.position.set(midX, midY, midZ);
+      // 耳罩：在耳朵位置
+      const cupR = earDist * 0.14;
+      const cupGeo = new THREE.SphereGeometry(cupR, 16, 12);
+      const cupL = new THREE.Mesh(cupGeo, cupMat);
+      const cupRMesh = new THREE.Mesh(cupGeo, cupMat);
+      cupL.position.set(eLx, eLy, eLz);
+      cupRMesh.position.set(eRx, eRy, eRz);
+      hpGroup.add(band, cupL, cupRMesh);
       hpGroup.userData.isHeadphone = true;
       this.headphone = hpGroup;
       this.group.add(hpGroup);
