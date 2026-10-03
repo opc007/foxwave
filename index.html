@@ -3848,42 +3848,8 @@
       this.baseY = -box.min.y * s;
       this.group.position.set(-c.x * s, this.baseY, -c.z * s);
       this.group.add(mesh);
-      this.buildHeadphone(box);
       scene.add(this.group);
       this.loaded = true;
-    }
-
-    buildHeadphone(box) {
-      // 简约耳机：头梁 + 两个耳罩，戴在耳朵位置
-      const cfg = this.cfg;
-      const hpGroup = new THREE.Group();
-      const bandMat = new THREE.MeshStandardMaterial({ color: 0x2a2a35, roughness: 0.6 });
-      const cupMat = new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.5 });
-      const bx = this.U.uBoxMin.value.x, by = this.U.uBoxMin.value.y, bz = this.U.uBoxMin.value.z;
-      const bsx = this.U.uBoxSize.value.x, bsy = this.U.uBoxSize.value.y, bsz = this.U.uBoxSize.value.z;
-      // 耳朵的本地坐标
-      const eLx = bx + bsx * cfg.earL[0], eLy = by + bsy * cfg.earL[1], eLz = bz + bsz * cfg.earL[2];
-      const eRx = bx + bsx * cfg.earR[0], eRy = by + bsy * cfg.earR[1], eRz = bz + bsz * cfg.earR[2];
-      const midX = (eLx + eRx) / 2, midY = (eLy + eRy) / 2, midZ = (eLz + eRz) / 2;
-      const earDist = Math.abs(eRx - eLx);
-      const R = earDist * 0.58;
-      // 头梁：半圆环，圆心在两耳连线中点，拱起
-      const band = new THREE.Mesh(
-        new THREE.TorusGeometry(R, earDist * 0.055, 10, 24, Math.PI),
-        bandMat
-      );
-      band.position.set(midX, midY, midZ);
-      // 耳罩：在耳朵位置
-      const cupR = earDist * 0.14;
-      const cupGeo = new THREE.SphereGeometry(cupR, 16, 12);
-      const cupL = new THREE.Mesh(cupGeo, cupMat);
-      const cupRMesh = new THREE.Mesh(cupGeo, cupMat);
-      cupL.position.set(eLx, eLy, eLz);
-      cupRMesh.position.set(eRx, eRy, eRz);
-      hpGroup.add(band, cupL, cupRMesh);
-      hpGroup.userData.isHeadphone = true;
-      this.headphone = hpGroup;
-      this.group.add(hpGroup);
     }
 
     update(dt, t) {
@@ -3905,10 +3871,6 @@
       mo.headT.set(pitchT + mo.nod, yawT + mo.shake, mo.tilt);
       mo.head.lerp(mo.headT, 1 - Math.exp(-dt * 6));
       this.U.uHead.value.copy(mo.head);
-      // 耳机跟随头部
-      if (this.headphone) {
-        this.headphone.rotation.set(mo.head.x, mo.head.y, mo.head.z);
-      }
       // 尾巴
       mo.tailPh += dt * (2.2 + Math.sin(t * 0.7) * 1.2);
       this.U.uTail.value.set(Math.sin(mo.tailPh) * 0.55, Math.sin(mo.tailPh * 0.7) * 0.22);
@@ -4002,16 +3964,10 @@
     const ch = simpleChars[activeCharId];
     if (!ch || !ch.loaded || !ch.mesh) return null;
     raycaster.setFromCamera(toNDC(x, y, ndc), camera);
-    // 先检查耳机
-    if (ch.headphone) {
-      const hpHit = raycaster.intersectObject(ch.headphone, true)[0];
-      if (hpHit) { hpHit.isHeadphone = true; return hpHit; }
-    }
     return raycaster.intersectObject(ch.mesh, false)[0] || null;
   }
   function zoneOf(hit) {
     if (activeCharId === 'fox') return zoneOfFox(hit);
-    if (hit && hit.isHeadphone) return 'headphones';
     const ch = simpleChars[activeCharId];
     if (!hit || !ch || !ch.loaded) return null;
     const p = ch.mesh.worldToLocal(hit.point.clone());
@@ -4028,12 +3984,6 @@
   function simpleDoBoop(zone) {
     const ch = simpleChars[activeCharId];
     if (!ch) return;
-    if (zone === 'headphones') {
-      setStation(stationIndex + 1);
-      if (typeof startIfIdle === 'function') startIfIdle();
-      toast('🎧 切换电台');
-      return;
-    }
     boops++;
     try { localStorage.setItem('foxfm.boops', String(boops)); } catch (_) {}
     const bn = $('boopN'); if (bn) bn.textContent = boops;
