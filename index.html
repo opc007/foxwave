@@ -2931,7 +2931,7 @@
   let zoneNx = 0.38;
   const _zn = new THREE.Vector3(), _zr = new THREE.Matrix4(), _ze = new THREE.Euler(0, 0, 0, 'YXZ'), _zpv = new THREE.Vector3();
   /** 命中点 → 静止姿态下的归一化坐标（抵消 rig 动作和头部旋转），再判断是哪个部位 */
-  function zoneOf(hit) {
+  function zoneOfFox(hit) {
     if (!hit) return null;
     if (hit.face && hit.face.materialIndex === 1) return 'headphones';
     const p = rig.worldToLocal(_zn.copy(hit.point)).add(rigOrigin);
@@ -3003,7 +3003,7 @@
     const r = canvas.getBoundingClientRect();
     return out.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
   }
-  function pick(x, y) {
+  function pickFox(x, y) {
     if (!model) return null;
     raycaster.setFromCamera(toNDC(x, y, ndc), camera);
     return raycaster.intersectObject(model, true)[0] || null;
@@ -3098,6 +3098,7 @@
     if (moved > 6 || elapsed > 600) return;
     const hit = pick(e.clientX, e.clientY);
     if (!hit) return;
+    if (activeCharId !== 'fox') { simpleDoBoop(zoneOf(hit)); return; }
     if (face.touch(true)) return;            // 正在睡觉：这一下只负责把它吓醒
 
     // 手速彩蛋：2.5 秒内连点 8 下 → 晕了
@@ -3637,6 +3638,341 @@
   onResize();
 
   /* =========================================================
+     多角色系统：SimpleCharacter（柴犬 / 兔兔 / 熊猫）
+     用 MeshStandardMaterial + onBeforeCompile 注入顶点变形，
+     复用场景灯光，无需改狐狸代码。
+     ========================================================= */
+  const CHARACTERS = {
+    fox:    { id: 'fox', name: '阿狐', emoji: '🦊', isFox: true },
+    dog:    { id: 'dog', name: '柴犬', emoji: '🐕', file: 'models/dog.glb', scale: 0.78 / 3.089,
+      headPivot: [0.4867, 0.855, 0.8362], headY: [0.73, 0.88],
+      earL: [0.1511, 0.9838, 0.8773], earR: [0.8087, 0.9857, 0.8811], earY: 0.93,
+      tailPivot: [0.5, 0.5447, 0.0809], tailR: 0.22,
+      eyeL: [0.269, 0.8754, 0.8984], eyeR: [0.6856, 0.8784, 0.9018], eyeSize: [0.06, 0.06],
+      nose: [0.5355, 0.8465, 1.0], centerX: 0.5 },
+    rabbit: { id: 'rabbit', name: '兔兔', emoji: '🐰', file: 'models/rabbit.glb', scale: 0.78 / 4.069,
+      headPivot: [0.4996, 0.5293, 0.5208], headY: [0.43, 0.58],
+      earL: [0.2511, 0.7958, 0.6565], earR: [0.7314, 0.7927, 0.6576], earY: 0.76,
+      tailPivot: [0.5001, 0.1881, 0.0679], tailR: 0.15,
+      eyeL: [0.2559, 0.6361, 0.7555], eyeR: [0.7443, 0.6366, 0.7549], eyeSize: [0.06, 0.06],
+      nose: [0.5, 0.6582, 1.0], centerX: 0.5 },
+    panda:  { id: 'panda', name: '熊猫', emoji: '🐼', file: 'models/panda.glb', scale: 0.78 / 3.236,
+      headPivot: [0.5062, 0.7131, 0.5695], headY: [0.61, 0.76],
+      earL: [0.2537, 0.927, 0.6951], earR: [0.7126, 0.937, 0.7104], earY: 0.90,
+      tailPivot: [0.5068, 0.2347, 0.0411], tailR: 0.15,
+      eyeL: [0.2875, 0.8125, 0.8891], eyeR: [0.725, 0.8125, 0.8908], eyeSize: [0.075, 0.085],
+      nose: [0.5066, 0.8417, 1.0], centerX: 0.5 },
+  };
+
+  class SimpleCharacter {
+    constructor(cfg) {
+      this.cfg = cfg;
+      this.group = new THREE.Group();
+      this.group.visible = false;
+      this.loaded = false;
+      this.baseY = 0;
+      const v3 = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+      this.U = {
+        uHead: { value: new THREE.Vector3() },
+        uEar: { value: new THREE.Vector2() },
+        uTail: { value: new THREE.Vector2() },
+        uBlink: { value: 0 },
+        uBoxMin: { value: new THREE.Vector3() },
+        uBoxSize: { value: new THREE.Vector3(1, 1, 1) },
+        uHeadPivot: { value: v3(cfg.headPivot) },
+        uHeadY: { value: new THREE.Vector2(cfg.headY[0], cfg.headY[1]) },
+        uEarL: { value: v3(cfg.earL) },
+        uEarR: { value: v3(cfg.earR) },
+        uEarY: { value: cfg.earY },
+        uCenterX: { value: cfg.centerX },
+        uTailPivot: { value: v3(cfg.tailPivot) },
+        uTailR: { value: cfg.tailR },
+        uEyeL: { value: v3(cfg.eyeL) },
+        uEyeR: { value: v3(cfg.eyeR) },
+        uEyeSize: { value: new THREE.Vector2(cfg.eyeSize[0], cfg.eyeSize[1]) },
+      };
+      this.mo = {
+        head: new THREE.Vector3(), headT: new THREE.Vector3(),
+        ear: new THREE.Vector2(), earT: new THREE.Vector2(),
+        tailPh: Math.random() * 6.28,
+        blink: 0, nextBlink: 2 + Math.random() * 3,
+        hop: 0, hopV: 0, spin: 0, spinV: 0,
+        nod: 0, shake: 0, tilt: 0, nextTilt: 3,
+      };
+    }
+
+    async load() {
+      const gltf = await gltfLoader.loadAsync(this.cfg.file);
+      let mesh = null;
+      gltf.scene.traverse((o) => { if (!mesh && o.isMesh) mesh = o; });
+      if (!mesh) throw new Error('no mesh in ' + this.cfg.file);
+      const srcMap = (mesh.material && mesh.material.map) ? mesh.material.map : null;
+      const mat = new THREE.MeshStandardMaterial({
+        map: srcMap, vertexColors: true, roughness: 0.85, metalness: 0.0,
+      });
+      const U = this.U;
+      mat.onBeforeCompile = (sh) => {
+        Object.assign(sh.uniforms, U);
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', `#include <common>
+            uniform vec3 uHead; uniform vec2 uEar; uniform vec2 uTail; uniform float uBlink;
+            uniform vec3 uBoxMin; uniform vec3 uBoxSize;
+            uniform vec3 uHeadPivot; uniform vec2 uHeadY;
+            uniform vec3 uEarL; uniform vec3 uEarR; uniform float uEarY; uniform float uCenterX;
+            uniform vec3 uTailPivot; uniform float uTailR;
+            uniform vec3 uEyeL; uniform vec3 uEyeR; uniform vec2 uEyeSize;
+            mat3 scRotX(float a){ float c=cos(a),s=sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }
+            mat3 scRotY(float a){ float c=cos(a),s=sin(a); return mat3(c,0.,-s, 0.,1.,0., s,0.,c); }
+            mat3 scRotZ(float a){ float c=cos(a),s=sin(a); return mat3(c,s,0., -s,c,0., 0.,0.,1.); }
+          `)
+          .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+          {
+            vec3 nn0 = (position - uBoxMin) / uBoxSize;
+            float hwn = smoothstep(uHeadY.x, uHeadY.y, nn0.y);
+            mat3 Rn = scRotY(uHead.y*hwn) * scRotX(uHead.x*hwn) * scRotZ(uHead.z*hwn);
+            objectNormal = Rn * objectNormal;
+          }`)
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+          {
+            vec3 n0 = (transformed - uBoxMin) / uBoxSize;
+            float hw = smoothstep(uHeadY.x, uHeadY.y, n0.y);
+            vec3 hp = uBoxMin + uBoxSize * uHeadPivot;
+            mat3 R = scRotY(uHead.y*hw) * scRotX(uHead.x*hw) * scRotZ(uHead.z*hw);
+            transformed = hp + R * (transformed - hp);
+            float ew = smoothstep(uEarY, uEarY+0.05, n0.y);
+            if (ew > 0.001) {
+              bool isL = n0.x < uCenterX;
+              vec3 ep = uBoxMin + uBoxSize * (isL ? uEarL : uEarR);
+              float ex = isL ? uEarL.x : uEarR.x;
+              float xm = 1. - smoothstep(0.02, 0.10, abs(n0.x - ex));
+              float ea = (isL ? uEar.x : uEar.y) * ew * xm;
+              mat3 E = scRotZ(ea * (isL ? 1. : -1.));
+              transformed = ep + E * (transformed - ep);
+            }
+            vec3 tp = uBoxMin + uBoxSize * uTailPivot;
+            float td = length((transformed - tp) / uBoxSize);
+            float tw = 1. - smoothstep(0., uTailR, td);
+            if (tw > 0.001) {
+              mat3 T = scRotY(uTail.x*tw) * scRotX(uTail.y*tw);
+              transformed = tp + T * (transformed - tp);
+            }
+            if (uBlink > 0.001) {
+              vec2 dL = vec2((n0.x-uEyeL.x)/uEyeSize.x, (n0.y-uEyeL.y)/uEyeSize.y);
+              vec2 dR = vec2((n0.x-uEyeR.x)/uEyeSize.x, (n0.y-uEyeR.y)/uEyeSize.y);
+              float bw = clamp((1.-smoothstep(0.5,1.0,length(dL))) + (1.-smoothstep(0.5,1.0,length(dR))), 0., 1.);
+              if (bw > 0.001) {
+                float ey = uBoxMin.y + uBoxSize.y * (uEyeL.y+uEyeR.y)*0.5;
+                transformed.y = mix(transformed.y, ey + (transformed.y-ey)*(1.-uBlink*0.9), bw);
+              }
+            }
+          }`);
+      };
+      mesh.material = mat;
+      mesh.frustumCulled = false;
+      mesh.position.set(0, 0, 0);
+      mesh.quaternion.identity();
+      mesh.scale.setScalar(1);
+      this.mesh = mesh;
+      mesh.geometry.computeBoundingBox();
+      const box = mesh.geometry.boundingBox;
+      this.U.uBoxMin.value.copy(box.min);
+      this.U.uBoxSize.value.copy(box.getSize(new THREE.Vector3()));
+      const c = box.getCenter(new THREE.Vector3());
+      const s = this.cfg.scale;
+      this.group.scale.setScalar(s);
+      this.baseY = -box.min.y * s;
+      this.group.position.set(-c.x * s, this.baseY, -c.z * s);
+      this.group.add(mesh);
+      scene.add(this.group);
+      this.loaded = true;
+    }
+
+    update(dt, t) {
+      if (!this.loaded || !this.group.visible) return;
+      const mo = this.mo, cfg = this.cfg;
+      // 呼吸
+      const br = Math.sin(t * 2.2) * 0.008;
+      this.group.scale.setScalar(cfg.scale * (1 + br));
+      // 头看向指针 / 镜头
+      let yawT = 0, pitchT = 0;
+      if (typeof pointer !== 'undefined' && pointer.active) {
+        yawT = THREE.MathUtils.clamp(pointer.ndc.x * 0.5, -0.5, 0.5);
+        pitchT = THREE.MathUtils.clamp(-pointer.ndc.y * 0.3, -0.25, 0.3);
+      }
+      if (t > mo.nextTilt) {
+        mo.tilt = mo.tilt ? 0 : (Math.random() < 0.5 ? -1 : 1) * (0.10 + Math.random() * 0.10);
+        mo.nextTilt = t + (mo.tilt ? 2 + Math.random() * 2 : 3 + Math.random() * 4);
+      }
+      mo.headT.set(pitchT + mo.nod, yawT + mo.shake, mo.tilt);
+      mo.head.lerp(mo.headT, 1 - Math.exp(-dt * 6));
+      this.U.uHead.value.copy(mo.head);
+      // 尾巴
+      mo.tailPh += dt * (2.2 + Math.sin(t * 0.7) * 1.2);
+      this.U.uTail.value.set(Math.sin(mo.tailPh) * 0.55, Math.sin(mo.tailPh * 0.7) * 0.22);
+      // 耳朵回弹
+      mo.ear.lerp(mo.earT, 1 - Math.exp(-dt * 8));
+      mo.earT.multiplyScalar(Math.exp(-dt * 2.5));
+      this.U.uEar.value.copy(mo.ear);
+      // 眨眼
+      if (t > mo.nextBlink) { mo.blink = 1; mo.nextBlink = t + 2.5 + Math.random() * 3.5; }
+      mo.blink = Math.max(0, mo.blink - dt * 5);
+      const b = mo.blink > 0.5 ? (1 - mo.blink) * 2 : mo.blink * 2;
+      this.U.uBlink.value = THREE.MathUtils.clamp(b, 0, 1);
+      // 跳
+      if (mo.hopV !== 0 || mo.hop !== 0) {
+        mo.hopV -= dt * 14;
+        mo.hop += mo.hopV * dt;
+        if (mo.hop <= 0) { mo.hop = 0; mo.hopV = 0; }
+      }
+      this.group.position.y = this.baseY + mo.hop;
+      // 转圈
+      if (mo.spinV !== 0) {
+        mo.spin += mo.spinV * dt;
+        mo.spinV *= Math.exp(-dt * 1.8);
+        if (Math.abs(mo.spinV) < 0.15) mo.spinV = 0;
+      }
+      this.group.rotation.y = mo.spin;
+      mo.nod *= Math.exp(-dt * 4);
+      mo.shake *= Math.exp(-dt * 4);
+    }
+
+    doAction(name) {
+      const mo = this.mo;
+      if (name === 'jump') mo.hopV = 4.2;
+      else if (name === 'spin') mo.spinV = 11;
+      else if (name === 'nod') mo.nod = 0.45;
+      else if (name === 'shake') mo.shake = 0.45;
+      else if (name === 'wiggle') mo.earT.set(0.9, -0.9);
+      else if (name === 'happy') { mo.hopV = 2.8; mo.earT.set(0.55, 0.55); }
+      else if (name === 'boop') { mo.nod = 0.35; mo.hopV = 1.2; }
+    }
+
+    dispose() {
+      if (this.mesh) {
+        this.mesh.geometry.dispose();
+        if (this.mesh.material) {
+          if (this.mesh.material.map) this.mesh.material.map.dispose();
+          this.mesh.material.dispose();
+        }
+      }
+      scene.remove(this.group);
+      this.loaded = false;
+    }
+  }
+
+  /* ---------- 角色管理器 ---------- */
+  let activeCharId = 'fox';
+  const simpleChars = {};
+
+  async function switchCharacter(id) {
+    if (!CHARACTERS[id] || id === activeCharId) return;
+    if (activeCharId === 'fox') { rig.visible = false; }
+    else if (simpleChars[activeCharId]) { simpleChars[activeCharId].group.visible = false; }
+    activeCharId = id;
+    if (id === 'fox') {
+      rig.visible = true;
+    } else {
+      if (!simpleChars[id]) {
+        simpleChars[id] = new SimpleCharacter(CHARACTERS[id]);
+        try {
+          if (typeof ui !== 'undefined' && ui.setText) ui.setText(`加载${CHARACTERS[id].name}…`);
+          await simpleChars[id].load();
+        } catch (err) {
+          console.error('[char] load failed', err);
+          if (typeof ui !== 'undefined' && ui.fail) ui.fail('角色加载失败', String((err && err.message) || err));
+          activeCharId = 'fox'; rig.visible = true; return;
+        }
+      }
+      simpleChars[id].group.visible = true;
+      simpleChars[id].doAction('happy');
+    }
+    document.querySelectorAll('.charchip').forEach((b) => {
+      b.setAttribute('aria-pressed', String(b.dataset.char === id));
+    });
+    if (typeof toast === 'function') toast(`${CHARACTERS[id].emoji} ${CHARACTERS[id].name}登场！`);
+    try { localStorage.setItem('foxfm.char', id); } catch (_) {}
+  }
+
+  /* ---------- 交互分发 ---------- */
+  function pick(x, y) {
+    if (activeCharId === 'fox') return pickFox(x, y);
+    const ch = simpleChars[activeCharId];
+    if (!ch || !ch.loaded || !ch.mesh) return null;
+    raycaster.setFromCamera(toNDC(x, y, ndc), camera);
+    return raycaster.intersectObject(ch.mesh, false)[0] || null;
+  }
+  function zoneOf(hit) {
+    if (activeCharId === 'fox') return zoneOfFox(hit);
+    const ch = simpleChars[activeCharId];
+    if (!hit || !ch || !ch.loaded) return null;
+    const p = ch.mesh.worldToLocal(hit.point.clone());
+    const n = p.sub(ch.U.uBoxMin.value).divide(ch.U.uBoxSize.value);
+    const cfg = ch.cfg;
+    const d = (a) => Math.hypot(n.x - a[0], n.y - a[1], n.z - a[2]);
+    if (d(cfg.nose) < 0.07) return 'nose';
+    if (d(cfg.eyeL) < 0.08) return 'eyeL';
+    if (d(cfg.eyeR) < 0.08) return 'eyeR';
+    if (n.y > cfg.earY) return 'ear';
+    if (n.y > cfg.headY[0]) return 'head';
+    return 'body';
+  }
+  function simpleDoBoop(zone) {
+    const ch = simpleChars[activeCharId];
+    if (!ch) return;
+    boops++;
+    try { localStorage.setItem('foxfm.boops', String(boops)); } catch (_) {}
+    const bn = $('boopN'); if (bn) bn.textContent = boops;
+    const box = $('boops');
+    if (box) { box.classList.remove('pop'); void box.offsetWidth; box.classList.add('pop'); }
+    if (zone === 'nose') { ch.doAction('boop'); toast('Boop! 鼻子被点了一下 👃'); }
+    else if (zone === 'head') { ch.doAction('nod'); toast(`${ch.cfg.emoji} 被摸头了，开心~`); }
+    else if (zone === 'ear') { ch.doAction('wiggle'); toast('耳朵抖了抖 👂'); }
+    else if (zone === 'eyeL' || zone === 'eyeR') { ch.doAction('shake'); toast('哎呀别戳眼睛！'); }
+    else { ch.doAction('jump'); }
+    const ms = MILESTONES[boops]; if (ms && typeof toast === 'function') toast(ms);
+  }
+
+  /* ---------- 角色切换 UI ---------- */
+  function buildCharBar() {
+    const player = $('player');
+    if (!player) return;
+    const bar = document.createElement('div');
+    bar.className = 'dial';
+    bar.id = 'charbar';
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', '角色');
+    bar.style.marginRight = '8px';
+    Object.values(CHARACTERS).forEach((c) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip charchip';
+      b.dataset.char = c.id;
+      b.innerHTML = `<span style="font-size:15px">${c.emoji}</span><span>${c.name}</span>`;
+      b.title = `切换到${c.name}（${c.id === 'fox' ? '1' : { dog: '2', rabbit: '3', panda: '4' }[c.id]}）`;
+      b.setAttribute('aria-label', `切换到${c.name}`);
+      b.setAttribute('aria-pressed', String(c.id === 'fox'));
+      b.addEventListener('click', () => { switchCharacter(c.id); if (typeof startIfIdle === 'function') startIfIdle(); });
+      bar.appendChild(b);
+    });
+    player.insertBefore(bar, player.firstChild);
+  }
+
+  /* ---------- 快捷键 ---------- */
+  const _charKeys = { 1: 'fox', 2: 'dog', 3: 'rabbit', 4: 'panda' };
+  window.addEventListener('keydown', (e) => {
+    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    const id = _charKeys[e.key];
+    if (id) { switchCharacter(id); }
+    if ((e.key === 'j' || e.key === 'J') && activeCharId !== 'fox' && simpleChars[activeCharId]) {
+      simpleChars[activeCharId].doAction('jump');
+    }
+    if ((e.key === 's' || e.key === 'S') && activeCharId !== 'fox' && simpleChars[activeCharId]) {
+      simpleChars[activeCharId].doAction('spin');
+    }
+  });
+
+
+  /* =========================================================
      渲染循环
      ========================================================= */
   const timer = new THREE.Timer();
@@ -3658,12 +3994,17 @@
     controls.autoRotateSpeed = Math.sin(t * 0.25) * 0.55;
 
     handleAudioEvents();
-    updateGaze();
-    face.update(dt, t);
-    if (sleepBtn) sleepBtn.setAttribute('aria-pressed', String(face.asleep));
-    updateFox(dt, t);
-    face.sync();
-    updateLook(dt);
+    if (activeCharId === 'fox') {
+      updateGaze();
+      face.update(dt, t);
+      if (sleepBtn) sleepBtn.setAttribute('aria-pressed', String(face.asleep));
+      updateFox(dt, t);
+      face.sync();
+      updateLook(dt);
+    } else {
+      const _ch = simpleChars[activeCharId];
+      if (_ch) _ch.update(dt, t);
+    }
     fx.update(dt, t);
     drawViz(t);
 
@@ -3688,6 +4029,15 @@
   }
   radio.station = stationIndex;
   setStation(stationIndex, true);
+
+  // 多角色：建切换条，恢复上次的角色
+  buildCharBar();
+  try {
+    const savedChar = localStorage.getItem('foxfm.char');
+    if (savedChar && CHARACTERS[savedChar] && savedChar !== 'fox') {
+      switchCharacter(savedChar);
+    }
+  } catch (_) {}
 
   window.__fox = {
     THREE, scene, camera, renderer, controls, radio, motion, deformUniforms, rig,
