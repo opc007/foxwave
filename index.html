@@ -237,6 +237,9 @@
   #viz{ flex: none; width: 74px; height: 22px; display: block; margin-left: auto; }
 
   .dial{ flex: none; display: flex; gap: 6px; }
+  .charbar{ position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 30;
+    display: flex; gap: 6px; padding: 6px; border-radius: 999px;
+    background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(12px); }
   .chip{
     display: flex; align-items: center; gap: 6px;
     height: 34px;
@@ -790,6 +793,7 @@
    * move ：狐狸跟拍的动作幅度
    */
   const STATIONS = [
+  // MP3 电台播放器（怀旧金曲）- 实际定义在 STATIONS 之后
     {
       key: 'blue', freq: '88.1', name: '深夜 Lo-fi', sub: '适合写代码、发呆、假装在学习',
       track: 'Midnight Study Tape', css: '#7d9bff', tint: null,
@@ -870,8 +874,52 @@
         floor: 0xfff1cf, particle: 0xffe066, additive: true, rise: 0.012, psize: 38, glow: 0.5
       },
       move: { nod: 0.09, sway: 0.1, tail: 0.3, squash: 0.02 }
+    },
+    {
+      key: 'gold', freq: '99.9', name: '怀旧金曲', sub: '公共版权老唱片 · 免费可商用',
+      track: 'Old Jazz Archive', css: '#ffb347', tint: null,
+      isMP3: true,
+      mp3s: [
+        'https://archive.org/download/17MelancholyCharlie/17_Melancholy_Charlie.mp3',
+        'https://archive.org/download/ACdsWorthOf1920s1930sJazzAndDanceMusic-Vol.1/01_Ja_Da.mp3',
+        'https://archive.org/download/KenMcPhersonJazzfromthe1920sand1930s/01-Tiger_Rag.mp3'
+      ],
+      look: {
+        key: 0xffd9a0, keyI: 3.0, rim: 0xffb347, rimI: 2.0, amb: 0.2, env: 0.5,
+        floor: 0xd4a574, particle: 0xffd700, additive: true, rise: 0.015, psize: 36, glow: 0.5
+      },
+      move: { nod: 0.08, sway: 0.12, tail: 0.35, squash: 0.02 }
     }
   ];
+
+  // MP3 电台播放器（怀旧金曲）
+  const mp3Audio = new Audio();
+  mp3Audio.crossOrigin = 'anonymous';
+  mp3Audio.preload = 'none';
+  let mp3Index = 0;
+  function playMP3Station(st) {
+    if (!st.mp3s || !st.mp3s.length) return;
+    if (typeof radio !== 'undefined' && radio.playing) radio.toggle();
+    mp3Index = 0;
+    mp3Audio.src = st.mp3s[mp3Index];
+    mp3Audio.play().catch((e) => {
+      console.warn('[mp3] play failed', e);
+      if (typeof toast === 'function') toast('音乐加载失败，可能是网络问题');
+    });
+    const tr = $('track'); if (tr) tr.textContent = '怀旧老唱片 · ' + (mp3Index + 1) + '/' + st.mp3s.length;
+  }
+  mp3Audio.addEventListener('ended', () => {
+    const st = STATIONS[stationIndex];
+    if (!st.isMP3) return;
+    mp3Index = (mp3Index + 1) % st.mp3s.length;
+    mp3Audio.src = st.mp3s[mp3Index];
+    mp3Audio.play().catch(() => {});
+    const tr = $('track'); if (tr) tr.textContent = '怀旧老唱片 · ' + (mp3Index + 1) + '/' + st.mp3s.length;
+  });
+  function stopMP3() {
+    mp3Audio.pause();
+    mp3Audio.removeAttribute('src');
+  }
 
   const urlStation = new URLSearchParams(location.search).get('station');
   let stationIndex = Math.max(0, STATIONS.findIndex((s) => s.key === urlStation));
@@ -2396,7 +2444,12 @@
     }
     applyLook(i, false);
     if (!silent) {
-      radio.setStation(i);
+      if (st.isMP3) {
+        playMP3Station(st);
+      } else {
+        stopMP3();
+        radio.setStation(i);
+      }
       if (changed) {
         stationSwitchAt = nowT;
         face.play('ears');
@@ -3060,6 +3113,18 @@
     burstNotes(4);
   }
   function togglePlay() {
+    const st = STATIONS[stationIndex];
+    if (st.isMP3) {
+      if (mp3Audio.paused) {
+        if (!mp3Audio.src) playMP3Station(st);
+        else mp3Audio.play().catch(() => {});
+        document.body.classList.add('is-playing');
+      } else {
+        mp3Audio.pause();
+        document.body.classList.remove('is-playing');
+      }
+      return;
+    }
     if (radio.playing) {
       radio.stop();
       document.body.classList.remove('is-playing');
@@ -3783,8 +3848,45 @@
       this.baseY = -box.min.y * s;
       this.group.position.set(-c.x * s, this.baseY, -c.z * s);
       this.group.add(mesh);
+      this.buildHeadphone(box);
       scene.add(this.group);
       this.loaded = true;
+    }
+
+    buildHeadphone(box) {
+      // 简约耳机：头梁 + 两个耳罩，跟随头部位置
+      const cfg = this.cfg;
+      const s = this.cfg.scale;
+      const hpGroup = new THREE.Group();
+      const bandMat = new THREE.MeshStandardMaterial({ color: 0x2a2a35, roughness: 0.6 });
+      const cupMat = new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.5 });
+      // 头梁：半圆环
+      const headW = (cfg.earR[0] - cfg.earL[0]) * this.U.uBoxSize.value.x;
+      const band = new THREE.Mesh(
+        new THREE.TorusGeometry(headW * 0.62, headW * 0.09, 12, 24, Math.PI),
+        bandMat
+      );
+      // 耳罩：两个圆柱
+      const cupGeo = new THREE.CylinderGeometry(headW * 0.16, headW * 0.16, headW * 0.12, 20);
+      const cupL = new THREE.Mesh(cupGeo, cupMat);
+      const cupR = new THREE.Mesh(cupGeo, cupMat);
+      cupL.rotation.z = Math.PI / 2;
+      cupR.rotation.z = Math.PI / 2;
+      const cx = (cfg.earL[0] + cfg.earR[0]) / 2;
+      const cy = (cfg.earL[1] + cfg.earR[1]) / 2;
+      const cz = (cfg.earL[2] + cfg.earR[2]) / 2;
+      // 转换到本地坐标（未缩放）
+      const bx = this.U.uBoxMin.value.x, by = this.U.uBoxMin.value.y, bz = this.U.uBoxMin.value.z;
+      const bsx = this.U.uBoxSize.value.x, bsy = this.U.uBoxSize.value.y, bsz = this.U.uBoxSize.value.z;
+      const hx = bx + bsx * cx, hy = by + bsy * (cy + 0.06), hz = bz + bsz * cz;
+      band.position.set(hx, hy, hz);
+      const earY = by + bsy * cy;
+      cupL.position.set(bx + bsx * cfg.earL[0], earY, bz + bsz * cfg.earL[2]);
+      cupR.position.set(bx + bsx * cfg.earR[0], earY, bz + bsz * cfg.earR[2]);
+      hpGroup.add(band, cupL, cupR);
+      hpGroup.userData.isHeadphone = true;
+      this.headphone = hpGroup;
+      this.group.add(hpGroup);
     }
 
     update(dt, t) {
@@ -3806,6 +3908,10 @@
       mo.headT.set(pitchT + mo.nod, yawT + mo.shake, mo.tilt);
       mo.head.lerp(mo.headT, 1 - Math.exp(-dt * 6));
       this.U.uHead.value.copy(mo.head);
+      // 耳机跟随头部
+      if (this.headphone) {
+        this.headphone.rotation.set(mo.head.x, mo.head.y, mo.head.z);
+      }
       // 尾巴
       mo.tailPh += dt * (2.2 + Math.sin(t * 0.7) * 1.2);
       this.U.uTail.value.set(Math.sin(mo.tailPh) * 0.55, Math.sin(mo.tailPh * 0.7) * 0.22);
@@ -3899,10 +4005,16 @@
     const ch = simpleChars[activeCharId];
     if (!ch || !ch.loaded || !ch.mesh) return null;
     raycaster.setFromCamera(toNDC(x, y, ndc), camera);
+    // 先检查耳机
+    if (ch.headphone) {
+      const hpHit = raycaster.intersectObject(ch.headphone, true)[0];
+      if (hpHit) { hpHit.isHeadphone = true; return hpHit; }
+    }
     return raycaster.intersectObject(ch.mesh, false)[0] || null;
   }
   function zoneOf(hit) {
     if (activeCharId === 'fox') return zoneOfFox(hit);
+    if (hit && hit.isHeadphone) return 'headphones';
     const ch = simpleChars[activeCharId];
     if (!hit || !ch || !ch.loaded) return null;
     const p = ch.mesh.worldToLocal(hit.point.clone());
@@ -3919,6 +4031,12 @@
   function simpleDoBoop(zone) {
     const ch = simpleChars[activeCharId];
     if (!ch) return;
+    if (zone === 'headphones') {
+      setStation(stationIndex + 1);
+      if (typeof startIfIdle === 'function') startIfIdle();
+      toast('🎧 切换电台');
+      return;
+    }
     boops++;
     try { localStorage.setItem('foxfm.boops', String(boops)); } catch (_) {}
     const bn = $('boopN'); if (bn) bn.textContent = boops;
@@ -3934,14 +4052,11 @@
 
   /* ---------- 角色切换 UI ---------- */
   function buildCharBar() {
-    const player = $('player');
-    if (!player) return;
     const bar = document.createElement('div');
-    bar.className = 'dial';
+    bar.className = 'ui charbar';
     bar.id = 'charbar';
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', '角色');
-    bar.style.marginRight = '8px';
     Object.values(CHARACTERS).forEach((c) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -3954,7 +4069,7 @@
       b.addEventListener('click', () => { switchCharacter(c.id); if (typeof startIfIdle === 'function') startIfIdle(); });
       bar.appendChild(b);
     });
-    player.insertBefore(bar, player.firstChild);
+    document.body.appendChild(bar);
   }
 
   /* ---------- 快捷键 ---------- */
